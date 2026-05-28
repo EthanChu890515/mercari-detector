@@ -42,6 +42,34 @@ def send_line_message(text):
     if response.status_code != 200:
         print(f"LINE 傳送失敗: {response.text}")
 
+def extract_json_array(html, start):
+    """括弧深度追蹤，正確取出完整 JSON 陣列，不受 ] 在字串中影響。"""
+    if start >= len(html) or html[start] != '[':
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(html)):
+        c = html[i]
+        if esc:
+            esc = False
+            continue
+        if c == '\\' and in_str:
+            esc = True
+            continue
+        if c == '"':
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if c in '[{':
+            depth += 1
+        elif c in ']}':
+            depth -= 1
+            if depth == 0:
+                return html[start:i + 1]
+    return None
+
 def fetch_mercari_tw_items():
     scraper = cloudscraper.create_scraper(browser={
         'browser': 'chrome',
@@ -78,38 +106,52 @@ def fetch_mercari_tw_items():
                 except json.JSONDecodeError as e:
                     print(f"⚠️ __NEXT_DATA__ 解析失敗: {e}")
 
-            # 方法 2：Next.js App Router RSC streaming — self.__next_f.push
+            # 方法 2：括弧深度追蹤直接從原始 HTML 取出
+            key = '"initialItems":'
+            search_start = 0
+            while True:
+                idx = html.find(key, search_start)
+                if idx < 0:
+                    break
+                arr_start = idx + len(key)
+                # 跳過可能的空白
+                while arr_start < len(html) and html[arr_start] in ' \t\n\r':
+                    arr_start += 1
+                if arr_start >= len(html) or html[arr_start] != '[':
+                    search_start = idx + 1
+                    continue
+                arr_str = extract_json_array(html, arr_start)
+                if arr_str:
+                    try:
+                        items = json.loads(arr_str)
+                        if items:
+                            print(f"✅ 括弧追蹤解析成功，共找到 {len(items)} 筆商品。")
+                            return items
+                    except json.JSONDecodeError as e:
+                        pos = e.pos
+                        print(f"⚠️ 括弧追蹤取出但 JSON 仍無效，位置 {pos} 前後: {repr(arr_str[max(0,pos-60):pos+60])}")
+                search_start = idx + 1
+
+            # 方法 3：Next.js App Router RSC streaming — self.__next_f.push
             rsc_chunks = re.findall(r'self\.__next_f\.push\(\[1,"((?:[^"\\]|\\.)*)"\]\)', html)
+            print(f"RSC chunks 數量: {len(rsc_chunks)}")
             for chunk in rsc_chunks:
                 try:
-                    decoded = chunk.encode('utf-8').decode('unicode_escape')
+                    decoded = json.loads(f'"{chunk}"')
                     if '"initialItems"' not in decoded:
                         continue
-                    for pattern in [
-                        r'"initialItems":(\[.*?\]),"initialPageToken"',
-                        r'"initialItems":(\[.*?\]),"total"',
-                    ]:
-                        m = re.search(pattern, decoded, re.DOTALL)
-                        if m:
-                            items = json.loads(m.group(1))
+                    print("找到含 initialItems 的 RSC chunk，嘗試解析...")
+                    idx = decoded.find(key)
+                    arr_start = idx + len(key)
+                    arr_str = extract_json_array(decoded, arr_start)
+                    if arr_str:
+                        items = json.loads(arr_str)
+                        if items:
                             print(f"✅ 從 RSC chunk 解析成功，共找到 {len(items)} 筆商品。")
                             return items
-                except Exception:
+                except Exception as e:
+                    print(f"⚠️ RSC chunk 解析錯誤: {e}")
                     continue
-
-            # 方法 3：直接從原始 HTML 抓（不做任何前處理）
-            for pattern in [
-                r'"initialItems":(\[.*?\]),"initialPageToken"',
-                r'"initialItems":(\[.*?\]),"total"',
-            ]:
-                m = re.search(pattern, html, re.DOTALL)
-                if m:
-                    try:
-                        items = json.loads(m.group(1))
-                        print(f"✅ 直接解析成功，共找到 {len(items)} 筆商品。")
-                        return items
-                    except json.JSONDecodeError as e:
-                        print(f"⚠️ 直接解析失敗 (pattern={pattern}): {e}")
 
             # debug：顯示 initialItems 周圍的原始內容
             print("⚠️ 解析失敗：所有方法均無法取得商品。")
