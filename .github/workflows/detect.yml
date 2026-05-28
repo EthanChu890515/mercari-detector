@@ -1,0 +1,29 @@
+name: Mercari Price Detector
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'  # 每 10 分鐘執行一次
+  workflow_dispatch:        # 允許手動觸發
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run detector
+        env:
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+          SEARCH_KEYWORD: ${{ secrets.SEARCH_KEYWORD }}
+          MIN_PRICE: ${{ secrets.MIN_PRICE }}
+          REDIS_URL: ${{ secrets.REDIS_URL }}
+        run: python detect.py
