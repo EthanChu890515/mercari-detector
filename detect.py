@@ -63,32 +63,63 @@ def fetch_mercari_tw_items():
         response.encoding = 'utf-8'
 
         if response.status_code == 200:
-            clean_text = response.text.replace('\\"', '"')
+            html = response.text
 
-            # 嘗試多種 pattern，增加容錯率
-            patterns = [
+            # 方法 1：Next.js Pages Router — __NEXT_DATA__
+            nd_match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html, re.DOTALL)
+            if nd_match:
+                try:
+                    nd = json.loads(nd_match.group(1))
+                    items = nd.get('props', {}).get('pageProps', {}).get('initialItems', [])
+                    if items:
+                        print(f"✅ 從 __NEXT_DATA__ 解析成功，共找到 {len(items)} 筆商品。")
+                        return items
+                    print(f"⚠️ __NEXT_DATA__ 存在但無 initialItems。pageProps keys: {list(nd.get('props',{}).get('pageProps',{}).keys())}")
+                except json.JSONDecodeError as e:
+                    print(f"⚠️ __NEXT_DATA__ 解析失敗: {e}")
+
+            # 方法 2：Next.js App Router RSC streaming — self.__next_f.push
+            rsc_chunks = re.findall(r'self\.__next_f\.push\(\[1,"((?:[^"\\]|\\.)*)"\]\)', html)
+            for chunk in rsc_chunks:
+                try:
+                    decoded = chunk.encode('utf-8').decode('unicode_escape')
+                    if '"initialItems"' not in decoded:
+                        continue
+                    for pattern in [
+                        r'"initialItems":(\[.*?\]),"initialPageToken"',
+                        r'"initialItems":(\[.*?\]),"total"',
+                    ]:
+                        m = re.search(pattern, decoded, re.DOTALL)
+                        if m:
+                            items = json.loads(m.group(1))
+                            print(f"✅ 從 RSC chunk 解析成功，共找到 {len(items)} 筆商品。")
+                            return items
+                except Exception:
+                    continue
+
+            # 方法 3：直接從原始 HTML 抓（不做任何前處理）
+            for pattern in [
                 r'"initialItems":(\[.*?\]),"initialPageToken"',
                 r'"initialItems":(\[.*?\]),"total"',
-                r'"initialItems":(\[.*?\])',
-            ]
-
-            items_data = []
-            for pattern in patterns:
-                match = re.search(pattern, clean_text, re.DOTALL)
-                if match:
-                    items_json_str = match.group(1)
+            ]:
+                m = re.search(pattern, html, re.DOTALL)
+                if m:
                     try:
-                        items_data = json.loads(items_json_str)
-                        print(f"✅ 成功解析，共找到 {len(items_data)} 筆商品。")
-                        return items_data
+                        items = json.loads(m.group(1))
+                        print(f"✅ 直接解析成功，共找到 {len(items)} 筆商品。")
+                        return items
                     except json.JSONDecodeError as e:
-                        print(f"⚠️ JSON 轉換失敗 (pattern={pattern}): {e}")
-                        continue
+                        print(f"⚠️ 直接解析失敗 (pattern={pattern}): {e}")
 
-            print("⚠️ 解析失敗：所有 pattern 均無法 match。")
-            # 輸出部分 HTML 供 debug
-            snippet = clean_text[:2000] if len(clean_text) > 2000 else clean_text
-            print(f"--- HTML 前 2000 字 ---\n{snippet}\n---")
+            # debug：顯示 initialItems 周圍的原始內容
+            print("⚠️ 解析失敗：所有方法均無法取得商品。")
+            idx = html.find('"initialItems"')
+            if idx >= 0:
+                print(f"找到 'initialItems' 於位置 {idx}，前後 300 字：")
+                print(repr(html[idx:idx+300]))
+            else:
+                print("HTML 中不含 'initialItems'，前 1000 字：")
+                print(html[:1000])
             return []
         else:
             print(f"抓取失敗，狀態碼: {response.status_code}")
